@@ -1,0 +1,17 @@
+# Sentiment analysis model to classify movie reviews as positive or negative based on the text of the review.
+# Binary or Two class classification model is used for this problem.
+
+# Importing libraries  
+import matplotlib.pyplot as plt 
+import os 
+import shutil 
+import string 
+import tensorflow as tf 
+from tensorflow.keras import layers
+from tensorflow.keras import losses
+from tensorflow.keras import preprocessing
+from tensorflow.keras.layers.experimental.preprocessing import TextVectorization
+
+url = "https://ai.stanford.edu/~amaas/data/sentiment/aclImdb_v1.tar.gz"
+dataset = tf.keras.utils.getfile('aclImdb_v1', url, untar = True, cache_dir = '.', cache_subdir = '')
+dataset_dir = os.path.join(os.path.dirname(dataset), 'aclImdb')
