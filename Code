@@ -1,17 +1,227 @@
-# Sentiment analysis model to classify movie reviews as positive or negative based on the text of the review.
-# Binary or Two class classification model is used for this problem.
+"""A binary or two class classifier model to perform sentiment analysis on an IMDB dataset.
+Sentiment analysis model to classify movie reviews as positive or negative, based on the text of the review.
+Large Movie Review Dataset that contains the text of 50,000 movie reviews from the Internet Movie Database.
+These are split into 25,000 reviews for training and 25,000 reviews for testing. The training and testing sets are balanced,
+meaning they contain an equal number of positive and negative reviews."""
 
-# Importing libraries  
-import matplotlib.pyplot as plt 
-import os 
-import shutil 
-import string 
-import tensorflow as tf 
+import matplotlib.pyplot as plt
+import os
+import re
+import shutil
+import string
+import tensorflow as tf
+
 from tensorflow.keras import layers
 from tensorflow.keras import losses
 from tensorflow.keras import preprocessing
 from tensorflow.keras.layers.experimental.preprocessing import TextVectorization
 
 url = "https://ai.stanford.edu/~amaas/data/sentiment/aclImdb_v1.tar.gz"
-dataset = tf.keras.utils.getfile('aclImdb_v1', url, untar = True, cache_dir = '.', cache_subdir = '')
+dataset = tf.keras.utils.get_file('aclImdb_v1', url, untar = True, cache_dir = '.', cache_subdir = '')
+
 dataset_dir = os.path.join(os.path.dirname(dataset), 'aclImdb')
+# i/p os.listdir(dataset_dir)
+# o/p ['imdb.vocab', 'imdbEr.txt', 'README', 'test', 'train']
+
+train_dir = os.path.join(dataset_dir, 'train')
+# i/p os.listdir(train_dir)
+# o/p ['labeledBow.feat', 'neg', 'pos', 'unsup', 'unsupBow.feat', 'urls_neg.txt', 'urls_pos.txt', 'urls_unsup.txt']
+test_dir = os. path.join(dataset_dir, 'test')
+# i/p os.listdir(test_dir)
+# o/p ['labeledBow.feat', 'neg', 'pos', 'urls_neg.txt', 'urls_pos.txt']
+
+sample_file = os.path.join(train_dir, 'pos/1181_9.txt')
+with open(sample_file) as f:
+    print(f.read())
+
+''' For loading the dataset we will use the text_dataset_from_directory utility, which expects a directory structure as follows.
+main_directory/
+...class_a/
+......a_text_1.txt
+......a_text_2.txt
+...class_b/
+......b_text_1.txt
+......b_text_2.txt
+To prepare a dataset for binary classification, you will need two folders on disk, corresponding to class_a and class_b. 
+These will be the positive and negative movie reviews, which can be found in aclImdb/train/pos and aclImdb/train/neg.
+As the IMDB dataset contains additional folders, you will remove them before using this utility.'''
+remove_dir = os.path.join(train_dir, 'unsup')
+shutil.rmtree(remove_dir)
+
+''' text_dataset_from_directory utility to create a labeled tf.data.Dataset. tf.data is a powerful collection of tools for working with data.
+When running a machine learning experiment, it is a best practice to divide your dataset into three splits: train, validation, and test.'''
+raw_train_ds = tf.keras.preprocessing.text_dataset_from_directory('aclImdb/train', batch_size = 32, validation_split = 0.2, subset = 'training', seed = 42)
+
+for text_batch, label_batch in raw_train_ds.take(1): # first batch of 32
+    for i in range(3):
+        print('Review:', text_batch.numpy()[i])
+        print('Label:', label_batch.numpy()[i])
+
+print('Label 0 corresponds to', raw_train_ds.class_names[0])
+print('Label 1 corresponds to', raw_train_ds.class_names[1])
+
+raw_val_ds = tf.keras.preprocessing.text_dataset_from_directory('aclImdb/train', batch_size = 32, validation_split = 0.2, subset = 'validation', seed = 42)
+raw_test_ds = tf.keras.preprocessing.text_dataset_from_directory('aclImdb/test', batch_size = 32)
+
+'''Standardization refers to preprocessing the text, typically to remove punctuation or HTML elements to simplify the dataset. Tokenization refers to splitting 
+strings into tokens (for example, splitting a sentence into individual words, by splitting on whitespace). Vectorization refers to converting tokens into numbers 
+so they can be fed into a neural network. All of these tasks can be accomplished with TextVectorization layer.As you saw above, the reviews contain various HTML tags like <br />. 
+These tags will not be removed by the default standardizer in the TextVectorization layer (which converts text to lowercase and strips punctuation by default, 
+but doesn't strip HTML). You will write a custom standardization function to remove the HTML.'''
+def custom_standardization(input_data):
+    lowercase = tf.strings.lower(input_data)
+    stripped_html = tf.strings.regex_replace(lowercase, '<br />', ' ')
+    return tf.strings.regex_replace(stripped_html, '[%s]' % re.escape(string.punctuation), ' ') # used to escape special characters and metacharacters
+
+'''TextVectorization layer is used to standardize, tokenize, and vectorize our data. You set the output_mode to int to create unique integer indices for each token.'''
+max_features = 10000
+vectorize_layer = TextVectorization(standardize = custom_standardization, max_tokens = 10000, output_mode = 'int', output_sequence_length = 250) # o/p length
+
+train_text = raw_train_ds.map(lambda x, y: x)
+vectorize_layer.adapt(train_text) # fit
+
+def vectorize_text(text, label):
+    text = tf.expand_dims(text, -1)
+    return vectorize_layer(text), label
+
+text_batch, label_batch = next(iter(raw_train_ds))
+first_text, first_label = text_batch[0], label_batch[0]
+print('Review:', first_text)
+print('Label:', raw_train_ds.class_names[first_label])
+print('Vectorized text:', vectorize_text(first_text, first_label))
+
+print('38---->', vectorize_layer.get_vocabulary()[38]) # to get the word
+print('649---->', vectorize_layer.get_vocabulary()[649])
+print('1049---->', vectorize_layer.get_vocabulary()[1049])
+
+train_ds = raw_train_ds.map(vectorize_text)
+val_ds = raw_val_ds.map(vectorize_text)
+test_ds = raw_test_ds.map(vectorize_text)
+
+'''.cache() - The tf.data.Dataset.cache transformation can cache a dataset, either in memory or on local storage. 
+This will save some operations (like file opening and data reading) from being executed during each epoch.
+.prefetch() - Prefetching overlaps the preprocessing and model execution of a training step. While the model is executing training steps, 
+the input pipeline is reading the data for step s+1. Doing so reduces the step time to the maximum (as opposed to the sum) 
+of the training and the time it takes to extract the data.
+AUTOTUNE - The number of elements to prefetch should be equal to (or possibly greater than) the number of batches consumed by a single training step. 
+You could either manually tune this value, or set it to tf.data.AUTOTUNE, which will prompt the tf.data runtime to tune the value dynamically at runtime.'''
+# Configure the dataset for performance
+AUTOTUNE = tf.data.AUTOTUNE
+train_ds = train_ds.cache().prefetch(buffer_size = AUTOTUNE)
+val_ds = val_ds.cache().prefetch(buffer_size = AUTOTUNE)
+test_ds = test_ds.cache().prefetch(buffer_size = AUTOTUNE)
+
+# Creating the model
+embedding_dim = 16
+model = tf.keras.Sequential([layers.Embedding(max_features + 1, embedding_dim), layers.Dropout(0.2), layers.GlobalAveragePooling1D(),
+                             layers.Dropout(0.2), layers.Dense(1)])
+model.summary()
+'''The layers are stacked sequentially to build the classifier:
+1) The first layer is an Embedding layer. This layer takes the integer-encoded reviews and looks up an embedding vector for each word-index. 
+These vectors are learned as the model trains. The vectors add a dimension to the output array. The resulting dimensions are: (batch, sequence, embedding). 
+2) Next, a GlobalAveragePooling1D layer returns a fixed-length output vector for each example by averaging over the sequence dimension. This allows the model 
+to handle input of variable length, in the simplest way possible.
+3) This fixed-length output vector is piped through a fully-connected (Dense) layer with 16 hidden units.
+4) The last layer is densely connected with a single output node.'''
+
+# Loss function and optimizer
+model.compile(loss = losses.BinaryCrossentropy(from_logits = True), optimizer = 'adam', metrics = tf.metrics.BinaryAccuracy(threshold = 0.0))
+
+# Training the model
+epochs = 10
+history = model.fit(train_ds, validation_data = val_ds, epochs = epochs)
+
+# Evalating the model
+loss, accuracy = model.evaluate(test_ds)
+print('Loss:', loss)
+print('Accuracy:', accuracy)
+
+# Create a plot of accuracy and loss over time
+history_dict = history.history
+history_dict.keys()
+'''There are four entries: one for each monitored metric during training and validation. 
+You can use these to plot the training and validation loss for comparison, as well as the training and validation accurac'''
+acc = history_dict['binary_accuracy']
+val_acc = history_dict['val_binary_accuracy']
+loss = history_dict['loss']
+val_loss = history_dict['val_loss']
+
+epochs = range(1, len(acc) + 1)
+plt.plot(epochs, loss, 'bo', label = 'Training loss')
+plt.plot(epochs, val_loss, 'b', label = 'Validation loss')
+plt.title('Training v/s Validation loss')
+plt.xlabel('Epochs')
+plt.ylabel('Loss')
+plt.legend()
+plt.show()
+
+epochs = range(1, len(acc) + 1)
+plt.plot(epochs, acc, 'bo', label = 'Training accuracy')
+plt.plot(epochs, val_acc, 'b', label = 'Validation accuracy')
+plt.title('Training v/s Validation accuracy')
+plt.xlabel('Epochs')
+plt.ylabel('Accuracy')
+plt.legend(loc = 'lower right')
+plt.show()
+'''Notice the training loss decreases with each epoch and the training accuracy increases with each epoch. This is expected when using a 
+gradient descent optimization—it should minimize the desired quantity on every iteration.This isn't the case for the validation loss and 
+ccuracy—they seem to peak before the training accuracy. This is an example of overfitting: the model performs better on the training data 
+than it does on data it has never seen before. After this point, the model over-optimizes and learns representations specific to the training 
+data that do not generalize to test data.For this particular case, you could prevent overfitting by simply stopping the training when the 
+validation accuracy is no longer increasing. One way to do so is to use the tf.keras.callbacks.EarlyStopping callback.'''
+
+# Export model
+'''You can include the TextVectorization layer inside your model.'''
+export_model = tf.keras.Sequential([vectorize_layer, model, layers.Activation('sigmoid')])
+export_model.compile(loss = losses.BinaryCrossentropy(from_logits = False), optimizer = 'adam', metrics = ['accuracy'])
+loss, accuracy = export_model.evaluate(raw_test_ds)
+print(accuracy)
+
+# Inference on nmew data
+examples = [
+  "The movie was great!",
+  "The movie was okay.",
+  "The movie was terrible..."
+]
+export_model.predict(examples)
+
+'''
+mathplotlib - library, pyplot - package
+# Matplotlib is a plotting library for the Python programming language and its numerical mathematics extension NumPy.
+os - module
+# The OS module in Python provides functions for interacting with the operating system.
+re - module
+# The Python module re provides full support for Perl-like regular expressions in Python.
+shutil - module
+# Shutil module in Python provides many functions of high-level operations on files and collections of files. 
+tensorflow - library
+# TensorFlow is a free and open-source software library for machine learning. It can be used across a range of tasks 
+but has a particular focus on training and inference of deep neural networks.
+keras - library
+# Keras is an open-source software library that provides a Python interface for artificial neural networks.
+  Keras acts as an interface for the TensorFlow library.
+layers - package
+# Layers are the basic building blocks of neural networks in Keras.
+losses - package 
+# Contains built-in loss functions.
+preprocessing - package
+# Provides keras data preprocessing utils to pre-process tf.data.Datasets before they are fed to the model.
+experimental - package
+# Public API for tf.keras.layers.experimental namespace.
+TextVectorization - class
+# Contains Text vectorization layer.
+  This layer has basic options for managing text in a Keras model. It transforms a batch of strings 
+  (one sample = one string) into either a list of token indices (one sample = 1D tensor of integer token indices) 
+  or a dense representation (one sample = 1D tensor of float values representing data about the sample's tokens). 
+utils - package
+# This package provides utilities for Keras, such as modified callbacks, genereators, etc.
+rmtree - package
+tf.data - package
+tf.data.dataset - 
+text_dataset_from_directory - function
+BinaryCrossentropy - function
+BinaryAccuracy - function
+metrics - function
+callbacks - class
+EarlyStopping - function
+'''
